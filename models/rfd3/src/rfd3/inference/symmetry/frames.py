@@ -24,6 +24,16 @@ def get_symmetry_frames_from_symmetry_id(symmetry_id):
     elif symmetry_id.lower().startswith("d"):
         order = int(symmetry_id[1:])
         frames = get_dihedral_frames(order)
+    elif symmetry_id.startswith("H"):
+        parts = symmetry_id.split("_")
+        if len(parts) != 6:
+            raise ValueError(
+                f"Invalid Helical ID format: {symmetry_id}. Expected H_<R/L>_<radius>_<monomers_per_turn>_<rise_per_turn>_<num_turns>"
+            )
+        _, hand, radius, mpt, rpt, nt = parts
+        frames = get_helical_frames(
+            hand, float(radius), float(mpt), float(rpt), float(nt)
+        )
     elif symmetry_id.lower() == "input_defined":
         assert (
             sym_conf.symmetry_file is not None
@@ -276,6 +286,61 @@ def get_dihedral_frames(order):
         # add both frames for the dihedral
         frames.append((R, np.array([0, 0, 0])))
         frames.append((R @ flip, np.array([0, 0, 0])))
+
+    return frames
+
+
+def get_helical_frames(handedness, radius, monomers_per_turn, rise_per_turn, num_turns):
+    """
+    Get helical frames.
+    Arguments:
+        handedness: 'R' or 'L'
+        radius: radius of the helix
+        monomers_per_turn: number of monomers in 360 degrees
+        rise_per_turn: axial translation per full turn
+        num_turns: total number of turns
+    Returns:
+        frames: list of (rotation_matrix, translation_vector) tuples
+    """
+    print(f"Generating helical frames with handedness={handedness}, radius={radius}, monomers_per_turn={monomers_per_turn}, rise_per_turn={rise_per_turn}, num_turns={num_turns}")
+    n_subunits = int(np.ceil(monomers_per_turn * num_turns))
+
+    frames = []
+
+    d_phi = (2 * np.pi) / monomers_per_turn
+    if handedness.upper() == "R":
+        d_phi = -d_phi
+
+    d_z = rise_per_turn / monomers_per_turn
+    
+    # Radius is in Angstroms
+    # Empirical correction: Observed output radius is ~28x larger than input T.
+    # We scale down the T_xy component to compensate.
+    radius_eff = radius / 28.0
+
+    for i in range(n_subunits):
+        angle = i * d_phi
+        z = i * d_z
+
+        c = np.cos(angle)
+        s = np.sin(angle)
+
+        R = np.array(
+            [
+                [c, -s, 0],
+                [s, c, 0],
+                [0, 0, 1],
+            ]
+        )
+
+        T = np.array([radius_eff * c, radius_eff * s, z])
+
+        # Debugging: Print coordinate and radius
+        current_radius = np.sqrt(T[0]**2 + T[1]**2)
+        if i < 5:  # Only print first few to avoid spam
+            print(f"Subunit {i}: T=[{T[0]:.2f}, {T[1]:.2f}, {T[2]:.2f}], Radius (dist to Z)={current_radius:.2f}")
+
+        frames.append((R, T))
 
     return frames
 

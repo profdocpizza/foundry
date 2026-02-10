@@ -45,7 +45,7 @@ class SymmetryConfig(BaseModel):
     )
     id: Optional[str] = Field(
         None,
-        description="Symmetry group ID. e.g. 'C3', 'D2'. Only C and D symmetry types are supported currently.",
+        description="Symmetry group ID. e.g. 'C3', 'D2', 'H_R_10.0_3.6_5.4_2'. Supported: C, D, H.",
     )
     is_unsym_motif: Optional[str] = Field(
         None,

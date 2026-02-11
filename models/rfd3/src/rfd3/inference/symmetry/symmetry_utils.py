@@ -244,7 +244,7 @@ def make_symmetric_atom_array_for_partial_diffusion(atom_array, sym_conf):
     frames = get_symmetry_frames_from_symmetry_id(sym_conf)
 
     # Add symmetry ID
-    symmetry_ids = np.full(n, sym_conf.id, dtype="U6")
+    symmetry_ids = np.full(n, sym_conf.id, dtype="<U100")
     atom_array.set_annotation("symmetry_id", symmetry_ids)
 
     # Initialize transform annotations (use same format as original system)

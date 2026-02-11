@@ -24,7 +24,7 @@ def add_sym_annotations(atom_array, sym_conf):
     is_asu = np.full(n, True, dtype=np.bool_)
     atom_array.set_annotation("is_sym_asu", is_asu)
     # symmetry_id
-    symmetry_ids = np.full(n, sym_conf.id, dtype="U6")
+    symmetry_ids = np.full(n, sym_conf.id, dtype="<U100")
     atom_array.set_annotation("symmetry_id", symmetry_ids)
     return atom_array
 

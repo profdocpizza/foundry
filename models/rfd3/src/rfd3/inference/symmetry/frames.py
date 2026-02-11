@@ -128,7 +128,13 @@ def get_symmetry_frames_from_atom_array(src_atom_array, input_frames):
         assert is_valid_rotation_matrix(
             R
         ), f"Computed frame {R} is not a valid rotation matrix"
-    computed_frames = [(R, np.array([0, 0, 0])) for R in Rs]
+    
+    # Calculate translation component T = u_fix - R @ u_mov
+    # This ensures that X_target approx R * X_asu + T
+    computed_frames = []
+    for R, (u_mov, _, u_fix) in zip(Rs, xforms.values()):
+        T = u_fix - R @ u_mov
+        computed_frames.append((R, T))
 
     # check that the computed frames match the input frames
     check_input_frames_match_symmetry_frames(

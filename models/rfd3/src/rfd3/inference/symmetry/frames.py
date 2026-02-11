@@ -302,7 +302,9 @@ def get_helical_frames(handedness, radius, monomers_per_turn, rise_per_turn, num
     Returns:
         frames: list of (rotation_matrix, translation_vector) tuples
     """
-    print(f"Generating helical frames with handedness={handedness}, radius={radius}, monomers_per_turn={monomers_per_turn}, rise_per_turn={rise_per_turn}, num_turns={num_turns}")
+    print(
+        f"Generating helical frames with handedness={handedness}, radius={radius}, monomers_per_turn={monomers_per_turn}, rise_per_turn={rise_per_turn}, num_turns={num_turns}"
+    )
     n_subunits = int(np.ceil(monomers_per_turn * num_turns))
 
     frames = []
@@ -312,11 +314,10 @@ def get_helical_frames(handedness, radius, monomers_per_turn, rise_per_turn, num
         d_phi = -d_phi
 
     d_z = rise_per_turn / monomers_per_turn
-    
-    # Radius is in Angstroms
-    # Empirical correction: Observed output radius is ~28x larger than input T.
-    # We scale down the T_xy component to compensate.
-    radius_eff = radius / 28.0
+
+    # Radius is encoded in ASU coordinates. Frames apply only rotation about Z
+    # and axial translation, with transform 0 as identity. The radius parameter
+    # is kept for ID compatibility but is not used here.
 
     for i in range(n_subunits):
         angle = i * d_phi
@@ -333,12 +334,13 @@ def get_helical_frames(handedness, radius, monomers_per_turn, rise_per_turn, num
             ]
         )
 
-        T = np.array([radius_eff * c, radius_eff * s, z])
+        T = np.array([0.0, 0.0, z])
 
-        # Debugging: Print coordinate and radius
-        current_radius = np.sqrt(T[0]**2 + T[1]**2)
+        # Debugging: Print coordinate and axial translation only
         if i < 5:  # Only print first few to avoid spam
-            print(f"Subunit {i}: T=[{T[0]:.2f}, {T[1]:.2f}, {T[2]:.2f}], Radius (dist to Z)={current_radius:.2f}")
+            print(
+                f"Subunit {i}: T=[{T[0]:.2f}, {T[1]:.2f}, {T[2]:.2f}], Requested radius={radius:.2f}"
+            )
 
         frames.append((R, T))
 

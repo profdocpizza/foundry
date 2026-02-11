@@ -38,6 +38,7 @@ from rfd3.inference.parsing import InputSelection
 from rfd3.inference.symmetry.symmetry_utils import (
     SymmetryConfig,
     center_symmetric_src_atom_array,
+    apply_helical_asu_radius_offset,
     make_symmetric_atom_array,
 )
 from rfd3.transforms.conditioning_base import (
@@ -737,6 +738,8 @@ class DesignInputSpecification(BaseModel):
             atom_array.coord[
                 ~atom_array.is_motif_atom_with_fixed_coord.astype(bool)
             ] = 0.0
+            if exists(self.symmetry) and self.symmetry.id:
+                atom_array = apply_helical_asu_radius_offset(atom_array, self.symmetry)
         return atom_array
 
     def _apply_globals(self, atom_array):

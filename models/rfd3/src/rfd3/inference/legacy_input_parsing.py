@@ -689,6 +689,8 @@ def create_atom_array_from_design_specification_legacy(
         atom_array.coord[~atom_array.is_motif_atom_with_fixed_coord.astype(bool), :] = (
             0.0
         )
+        if exists(symmetry) and symmetry.get("id"):
+            atom_array = apply_helical_asu_radius_offset(atom_array, symmetry)
 
     # This is an annotation on the diffused regions, so must be added after accumulate_components
     if spoof_helical_bundle_ss_conditioning:

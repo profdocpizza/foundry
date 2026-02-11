@@ -63,6 +63,56 @@ def convery_sym_conf_to_symmetry_config(sym_conf: dict):
     return SymmetryConfig(**sym_conf)
 
 
+def _parse_helical_symmetry_id(symmetry_id: str) -> Optional[tuple]:
+    if not symmetry_id or not symmetry_id.startswith("H"):
+        return None
+    parts = symmetry_id.split("_")
+    if len(parts) != 6:
+        return None
+    _, hand, radius, mpt, rpt, nt = parts
+    try:
+        return (hand, float(radius), float(mpt), float(rpt), float(nt))
+    except ValueError:
+        return None
+
+
+def get_helical_radius_from_symmetry_id(symmetry_id: str) -> Optional[float]:
+    parsed = _parse_helical_symmetry_id(symmetry_id)
+    if parsed is None:
+        return None
+    return parsed[1]
+
+
+def apply_helical_asu_radius_offset(atom_array, sym_conf: SymmetryConfig | dict):
+    """
+    Offset ASU coordinates by the helical radius before diffusion.
+    This seeds a non-zero radius when H symmetry is used.
+    """
+    if not isinstance(sym_conf, SymmetryConfig):
+        sym_conf = convery_sym_conf_to_symmetry_config(sym_conf)
+    if not sym_conf.id:
+        return atom_array
+
+    radius = get_helical_radius_from_symmetry_id(sym_conf.id)
+    if radius is None:
+        return atom_array
+
+    if "is_sym_asu" not in atom_array.get_annotation_categories():
+        return atom_array
+
+    is_sym_asu = atom_array.is_sym_asu.astype(bool)
+    if "is_motif_atom_with_fixed_coord" in atom_array.get_annotation_categories():
+        fixed_mask = atom_array.is_motif_atom_with_fixed_coord.astype(bool)
+    else:
+        fixed_mask = np.zeros(atom_array.shape[0], dtype=bool)
+
+    mask = is_sym_asu & ~fixed_mask
+    if mask.any():
+        atom_array.coord[mask] += np.array([radius, 0.0, 0.0], dtype=atom_array.coord.dtype)
+
+    return atom_array
+
+
 def make_symmetric_atom_array(
     asu_atom_array,
     sym_conf: SymmetryConfig | dict,
@@ -324,7 +374,9 @@ def center_symmetric_src_atom_array(src_atom_array):
     return src_atom_array
 
 
-def apply_symmetry_to_xyz_atomwise(X_L, sym_feats, partial_diffusion=False):
+def apply_symmetry_to_xyz_atomwise(
+    X_L, sym_feats, partial_diffusion=False, skip_com_centering=False
+):
     """
     Apply symmetry to the xyz coordinates.
     Arguments:
@@ -342,8 +394,13 @@ def apply_symmetry_to_xyz_atomwise(X_L, sym_feats, partial_diffusion=False):
         for k, v in sym_feats["sym_transform"].items()
         if int(k) != FIXED_TRANSFORM_ID
     }  # {str(id): tensor(3,3)} -> {int(id): tensor(3,3)}
+    helical_like = False
+    for _, (_, t_vec) in sym_transforms.items():
+        if torch.any(torch.abs(t_vec[..., 2]) > 0).item():
+            helical_like = True
+            break
     # COM correction (in case there is drift)
-    if not partial_diffusion:
+    if not partial_diffusion and not skip_com_centering:
         X_L[:, ~fixed_motif_mask, :] = X_L[:, ~fixed_motif_mask, :] - X_L[
             :, ~fixed_motif_mask, :
         ].mean(dim=1, keepdim=True)
@@ -360,6 +417,11 @@ def apply_symmetry_to_xyz_atomwise(X_L, sym_feats, partial_diffusion=False):
         if entity_asu_mask.sum() == 0:
             continue
         asu_xyz = X_L[:, entity_asu_mask, :]  # [B, Lasu, 3]
+        if helical_like and not getattr(apply_symmetry_to_xyz_atomwise, "_logged_asu_radius", False):
+            asu_xy = asu_xyz[0, :, :2]
+            asu_radius = torch.sqrt(torch.sum(asu_xy**2, dim=-1)).mean().item()
+            print(f"ASU mean radius before symmetry: {asu_radius:.2f}")
+            apply_symmetry_to_xyz_atomwise._logged_asu_radius = True
         # Transforms
         unique_transform_id = torch.unique(sym_transform_id[entity_id_mask]).tolist()
         for (

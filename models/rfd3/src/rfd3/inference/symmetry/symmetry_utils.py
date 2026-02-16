@@ -375,7 +375,7 @@ def center_symmetric_src_atom_array(src_atom_array):
 
 
 def apply_symmetry_to_xyz_atomwise(
-    X_L, sym_feats, partial_diffusion=False, skip_com_centering=False
+    X_L, sym_feats, partial_diffusion=False
 ):
     """
     Apply symmetry to the xyz coordinates.
@@ -394,13 +394,8 @@ def apply_symmetry_to_xyz_atomwise(
         for k, v in sym_feats["sym_transform"].items()
         if int(k) != FIXED_TRANSFORM_ID
     }  # {str(id): tensor(3,3)} -> {int(id): tensor(3,3)}
-    helical_like = False
-    for _, (_, t_vec) in sym_transforms.items():
-        if torch.any(torch.abs(t_vec[..., 2]) > 0).item():
-            helical_like = True
-            break
     # COM correction (in case there is drift)
-    if not partial_diffusion and not skip_com_centering:
+    if not partial_diffusion:
         X_L[:, ~fixed_motif_mask, :] = X_L[:, ~fixed_motif_mask, :] - X_L[
             :, ~fixed_motif_mask, :
         ].mean(dim=1, keepdim=True)
@@ -417,11 +412,6 @@ def apply_symmetry_to_xyz_atomwise(
         if entity_asu_mask.sum() == 0:
             continue
         asu_xyz = X_L[:, entity_asu_mask, :]  # [B, Lasu, 3]
-        if helical_like and not getattr(apply_symmetry_to_xyz_atomwise, "_logged_asu_radius", False):
-            asu_xy = asu_xyz[0, :, :2]
-            asu_radius = torch.sqrt(torch.sum(asu_xy**2, dim=-1)).mean().item()
-            print(f"ASU mean radius before symmetry: {asu_radius:.2f}")
-            apply_symmetry_to_xyz_atomwise._logged_asu_radius = True
         # Transforms
         unique_transform_id = torch.unique(sym_transform_id[entity_id_mask]).tolist()
         for (
@@ -433,5 +423,11 @@ def apply_symmetry_to_xyz_atomwise(
             sym_X_L[:, this_subunit, :] = torch.einsum(
                 "blc,cd->bld", asu_xyz, sym_transforms[target_id][0].to(asu_xyz.dtype)
             ) + sym_transforms[target_id][1].to(asu_xyz.dtype)
+
+    # Post-symmetrization COM centering to ensure result is centered
+    if not partial_diffusion:
+        sym_X_L[:, ~fixed_motif_mask, :] = sym_X_L[:, ~fixed_motif_mask, :] - sym_X_L[
+            :, ~fixed_motif_mask, :
+        ].mean(dim=1, keepdim=True)
 
     return sym_X_L

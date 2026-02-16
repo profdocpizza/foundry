@@ -369,20 +369,11 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
         # update symmetric frames to correct for change in global frame
         symmetry_feats = {k: v for k, v in f.items() if "sym" in k}
 
-        skip_com_centering = False
-        sym_transforms = symmetry_feats.get("sym_transform", {})
-        if sym_transforms:
-            for _, (_, t_vec) in sym_transforms.items():
-                if torch.any(torch.abs(t_vec) > 0).item():
-                    skip_com_centering = True
-                    break
-
         # apply symmetry frame shift to X_L
         X_L = apply_symmetry_to_xyz_atomwise(
             X_L,
             symmetry_feats,
             partial_diffusion=("partial_t" in f),
-            skip_com_centering=skip_com_centering,
         )
 
         return X_L

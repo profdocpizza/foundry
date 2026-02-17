@@ -361,20 +361,33 @@ def _del_util_annotations(aary):
 #########################
 
 
-def center_symmetric_src_atom_array(src_atom_array):
+def center_symmetric_src_atom_array(src_atom_array, symmetry_id=None):
     """
     Center the src atom array at the origin.
     Arguments:
         src_atom_array: atom array of the source
+        symmetry_id: optional symmetry ID string (e.g. "H_R_0_20_25_4")
     Returns:
         src_atom_array: atom array of the source centered at the origin
     """
+    is_helical = symmetry_id is not None and str(symmetry_id).startswith("H_")
+    is_protein = src_atom_array.chain_type == 6
+
     # Compute COM of the src atom array (protein only elements)
     src_atom_array_com = np.mean(
-        src_atom_array[src_atom_array.chain_type == 6].coord, axis=0
+        src_atom_array[is_protein].coord, axis=0
     )
-    # center the src atom array
-    src_atom_array.coord -= src_atom_array_com
+
+    if is_helical:
+        # For helical symmetry, skip COM centering entirely — preserve all
+        # coordinates exactly as they are in the input PDB.
+        ranked_logger.info(
+            "Helical symmetry detected: skipping COM centering for all atoms "
+            "(protein and ligand coordinates preserved)."
+        )
+    else:
+        # center the entire src atom array
+        src_atom_array.coord -= src_atom_array_com
     return src_atom_array
 
 
@@ -415,14 +428,11 @@ def apply_symmetry_to_xyz_atomwise(
     is_helical = helical_radius is not None
 
     # COM correction (in case there is drift)
-    # For helical symmetry, only center along Z (the helix axis).
-    # XY centering is destructive for helices because the geometric center of a
-    # partial helix is off the Z axis; subtracting it shifts the ASU angularly,
-    # causing all monomers to orbit around Z between diffusion steps.
+    # For helical symmetry, skip COM centering entirely to preserve input positioning.
+    # For cyclic/dihedral, center all axes.
     if not partial_diffusion:
         if is_helical:
-            mean_z = X_L[:, ~fixed_motif_mask, 2:3].mean(dim=1, keepdim=True)
-            X_L[:, ~fixed_motif_mask, 2:3] = X_L[:, ~fixed_motif_mask, 2:3] - mean_z
+            pass  # No COM centering for helical symmetry
         else:
             X_L[:, ~fixed_motif_mask, :] = X_L[:, ~fixed_motif_mask, :] - X_L[
                 :, ~fixed_motif_mask, :
@@ -473,11 +483,10 @@ def apply_symmetry_to_xyz_atomwise(
             ) + sym_transforms[target_id][1].to(asu_xyz.dtype)
 
     # Post-symmetrization COM centering to ensure result is centered
-    # Same logic: Z-only for helical, full COM for cyclic/dihedral
+    # For helical symmetry, skip COM centering entirely.
     if not partial_diffusion:
         if is_helical:
-            mean_z = sym_X_L[:, ~fixed_motif_mask, 2:3].mean(dim=1, keepdim=True)
-            sym_X_L[:, ~fixed_motif_mask, 2:3] = sym_X_L[:, ~fixed_motif_mask, 2:3] - mean_z
+            pass  # No post-symmetrization COM centering for helical symmetry
         else:
             sym_X_L[:, ~fixed_motif_mask, :] = sym_X_L[:, ~fixed_motif_mask, :] - sym_X_L[
                 :, ~fixed_motif_mask, :

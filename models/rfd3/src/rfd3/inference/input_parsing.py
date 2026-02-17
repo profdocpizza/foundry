@@ -331,7 +331,7 @@ class DesignInputSpecification(BaseModel):
 
                 # Center for symmetric design
                 if exists(data.get("symmetry")) and data["symmetry"].get("id"):
-                    atom_array = center_symmetric_src_atom_array(atom_array)
+                    atom_array = center_symmetric_src_atom_array(atom_array, symmetry_id=data["symmetry"]["id"])
 
                 if "atom_id" in atom_array.get_annotation_categories():
                     atom_array.del_annotation("atom_id")
@@ -716,7 +716,21 @@ class DesignInputSpecification(BaseModel):
 
     def _set_origin(self, atom_array):
         """Set origin token and initialize coordinates."""
-        if self.is_partial_diffusion:
+        is_helical = exists(self.symmetry) and self.symmetry.id and str(self.symmetry.id).startswith("H_")
+
+        if is_helical:
+            # For helical symmetry, skip COM centering entirely — preserve
+            # all input coordinates (protein + ligand) as-is.
+            logger.info(
+                "Helical symmetry: skipping COM centering to preserve input coordinates"
+            )
+            if not self.is_partial_diffusion:
+                # Diffused atoms are still initialized at origin
+                atom_array.coord[
+                    ~atom_array.is_motif_atom_with_fixed_coord.astype(bool)
+                ] = 0.0
+                atom_array = apply_helical_asu_radius_offset(atom_array, self.symmetry)
+        elif self.is_partial_diffusion:
             # Partial diffusion: use COM, keep all coordinates
             if exists(self.symmetry) and self.symmetry.id:
                 # For symmetric structures, avoid COM centering that would collapse chains
@@ -740,6 +754,7 @@ class DesignInputSpecification(BaseModel):
             ] = 0.0
             if exists(self.symmetry) and self.symmetry.id:
                 atom_array = apply_helical_asu_radius_offset(atom_array, self.symmetry)
+
         return atom_array
 
     def _apply_globals(self, atom_array):

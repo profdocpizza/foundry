@@ -480,7 +480,7 @@ def create_atom_array_from_design_specification_legacy(
         ]
         # If we are doing symmetric design, we need to center the full input atom array at the origin (for getting symmetry frames)
         if exists(symmetry) and symmetry.get("id"):
-            atom_array_input = center_symmetric_src_atom_array(atom_array_input)
+            atom_array_input = center_symmetric_src_atom_array(atom_array_input, symmetry_id=symmetry["id"])
     elif exists(contig) or exists(length):
         atom_array_input = None
     else:

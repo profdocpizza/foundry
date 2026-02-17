@@ -31,10 +31,14 @@ class AddSymmetryFeats(Transform):
         # Get frames from atom_array
         transforms_dict = self.make_transforms_dict(atom_array)
         data["feats"]["sym_transform"] = transforms_dict  # {str(id): tuple (R,T)}
-        # Else, add symmetry features atomwise
+        # Add symmetry features atomwise (numeric only — converted to tensors downstream)
         for feature_name in self.symmetry_feats:
             feature_array = atom_array.get_annotation(feature_name)
             data["feats"][feature_name] = feature_array
+        # Store symmetry_id as a plain Python string (not numpy str_ or array)
+        # so downstream NaN-checks and ConvertToTorch don't choke on it.
+        if "symmetry_id" in atom_array.get_annotation_categories():
+            data["feats"]["symmetry_id"] = str(atom_array.symmetry_id[0])
         return data
 
     def make_transforms_dict(self, atom_array):

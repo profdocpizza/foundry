@@ -180,7 +180,7 @@ def check_input_frames_match_symmetry_frames(
     computed_frames, original_frames, nids_by_entity
 ) -> None:
     """
-    Check if the atom array matches the symmetry_id.
+    Check if the ato1m array 2matches the symmetry_id.
     Arguments:
         computed_frames: list of computed frames
         original_frames: list of original frames

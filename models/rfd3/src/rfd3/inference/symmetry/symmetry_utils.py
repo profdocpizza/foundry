@@ -69,9 +69,9 @@ def _parse_helical_symmetry_id(symmetry_id: str) -> Optional[tuple]:
     parts = symmetry_id.split("_")
     if len(parts) != 6:
         return None
-    _, hand, radius, mpt, rpt, nt = parts
+    _, hand, radius, angle, rise, monomers = parts
     try:
-        return (hand, float(radius), float(mpt), float(rpt), float(nt))
+        return (hand, float(radius), float(angle), float(rise), float(monomers))
     except ValueError:
         return None
 
@@ -108,7 +108,11 @@ def apply_helical_asu_radius_offset(atom_array, sym_conf: SymmetryConfig | dict)
 
     mask = is_sym_asu & ~fixed_mask
     if mask.any():
-        atom_array.coord[mask] += np.array([radius, 0.0, 0.0], dtype=atom_array.coord.dtype)
+        # Set explicitly to ensure X=radius, Y=0, Z=0 for the ASU initialization
+        # Use simple assignment instead of += to avoid accumulating any prior offsets
+        offset_pos = np.zeros_like(atom_array.coord[mask])
+        offset_pos[:, 0] = radius
+        atom_array.coord[mask] = offset_pos
 
     return atom_array
 
@@ -374,6 +378,17 @@ def center_symmetric_src_atom_array(src_atom_array):
     return src_atom_array
 
 
+def _get_helical_radius_from_sym_feats(sym_feats):
+    """Extract helical radius from symmetry features if available."""
+    sym_id = sym_feats.get("symmetry_id", None)
+    if sym_id is None:
+        return None
+    # symmetry_id is an array of identical strings (one per atom); take the first
+    if hasattr(sym_id, '__len__') and len(sym_id) > 0:
+        sym_id = sym_id[0] if not isinstance(sym_id, str) else sym_id
+    return get_helical_radius_from_symmetry_id(str(sym_id))
+
+
 def apply_symmetry_to_xyz_atomwise(
     X_L, sym_feats, partial_diffusion=False
 ):
@@ -394,11 +409,44 @@ def apply_symmetry_to_xyz_atomwise(
         for k, v in sym_feats["sym_transform"].items()
         if int(k) != FIXED_TRANSFORM_ID
     }  # {str(id): tensor(3,3)} -> {int(id): tensor(3,3)}
+
+    # Determine if we are in helical mode
+    helical_radius = _get_helical_radius_from_sym_feats(sym_feats)
+    is_helical = helical_radius is not None
+
     # COM correction (in case there is drift)
+    # For helical symmetry, only center along Z (the helix axis).
+    # XY centering is destructive for helices because the geometric center of a
+    # partial helix is off the Z axis; subtracting it shifts the ASU angularly,
+    # causing all monomers to orbit around Z between diffusion steps.
     if not partial_diffusion:
-        X_L[:, ~fixed_motif_mask, :] = X_L[:, ~fixed_motif_mask, :] - X_L[
-            :, ~fixed_motif_mask, :
-        ].mean(dim=1, keepdim=True)
+        if is_helical:
+            mean_z = X_L[:, ~fixed_motif_mask, 2:3].mean(dim=1, keepdim=True)
+            X_L[:, ~fixed_motif_mask, 2:3] = X_L[:, ~fixed_motif_mask, 2:3] - mean_z
+        else:
+            X_L[:, ~fixed_motif_mask, :] = X_L[:, ~fixed_motif_mask, :] - X_L[
+                :, ~fixed_motif_mask, :
+            ].mean(dim=1, keepdim=True)
+
+    # Enforce helical radius on ASU before applying symmetry transforms.
+    # For unconditional helical designs the initial radius seed is overwhelmed
+    # by the noise schedule (c0 >> radius), so we must re-inject the target
+    # radius at every symmetry step.
+    if is_helical and not partial_diffusion:
+        # Only adjust non-fixed ASU atoms
+        asu_non_fixed = is_sym_asu & ~fixed_motif_mask
+        if asu_non_fixed.any():
+            asu_xy = X_L[:, asu_non_fixed, :2]  # [B, Lasu, 2] (X, Y)
+            asu_com_xy = asu_xy.mean(dim=1, keepdim=True)  # [B, 1, 2]
+            current_radius = torch.norm(asu_com_xy, dim=-1, keepdim=True).clamp(min=1e-6)  # [B, 1, 1]
+            # Scale XY of ASU so that the COM sits at the target radius
+            scale = helical_radius / current_radius  # [B, 1, 1]
+            # Shift ASU atoms: translate COM to target radius, keep internal structure
+            target_com_xy = asu_com_xy * scale  # [B, 1, 2]
+            delta_xy = target_com_xy - asu_com_xy  # [B, 1, 2]
+            X_L[:, asu_non_fixed, 0] += delta_xy[:, :, 0]
+            X_L[:, asu_non_fixed, 1] += delta_xy[:, :, 1]
+
     sym_X_L = X_L.clone()
 
     # Loop through each symmetry entity id - making sure that we apply the matching symmetry transform to asu id
@@ -425,9 +473,14 @@ def apply_symmetry_to_xyz_atomwise(
             ) + sym_transforms[target_id][1].to(asu_xyz.dtype)
 
     # Post-symmetrization COM centering to ensure result is centered
+    # Same logic: Z-only for helical, full COM for cyclic/dihedral
     if not partial_diffusion:
-        sym_X_L[:, ~fixed_motif_mask, :] = sym_X_L[:, ~fixed_motif_mask, :] - sym_X_L[
-            :, ~fixed_motif_mask, :
-        ].mean(dim=1, keepdim=True)
+        if is_helical:
+            mean_z = sym_X_L[:, ~fixed_motif_mask, 2:3].mean(dim=1, keepdim=True)
+            sym_X_L[:, ~fixed_motif_mask, 2:3] = sym_X_L[:, ~fixed_motif_mask, 2:3] - mean_z
+        else:
+            sym_X_L[:, ~fixed_motif_mask, :] = sym_X_L[:, ~fixed_motif_mask, :] - sym_X_L[
+                :, ~fixed_motif_mask, :
+            ].mean(dim=1, keepdim=True)
 
     return sym_X_L

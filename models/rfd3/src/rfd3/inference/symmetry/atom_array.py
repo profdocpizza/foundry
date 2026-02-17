@@ -157,7 +157,9 @@ def apply_symmetry_to_atomarray_coord(atom_array, frame):
         frame: symmetry frame (R, T)
     """
     R, T = frame
-    atom_array.coord = atom_array.coord @ R.T
+    # Use `coord @ R` (not R.T) to match the codebase convention where frames
+    # store R^T of the true rotation, so `x @ R_stored` = `R_true @ x`.
+    atom_array.coord = atom_array.coord @ R
     atom_array.coord += T  # T should be 0 for most symmetry cases
     return atom_array
 

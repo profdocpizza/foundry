@@ -28,11 +28,11 @@ def get_symmetry_frames_from_symmetry_id(symmetry_id):
         parts = symmetry_id.split("_")
         if len(parts) != 6:
             raise ValueError(
-                f"Invalid Helical ID format: {symmetry_id}. Expected H_<R/L>_<radius>_<monomers_per_turn>_<rise_per_turn>_<num_turns>"
+                f"Invalid Helical ID format: {symmetry_id}. Expected H_<R/L>_<radius>_<angle_per_monomer>_<rise_per_monomer>_<num_monomers>"
             )
-        _, hand, radius, mpt, rpt, nt = parts
+        _, hand, radius, apm, rpm, nm = parts
         frames = get_helical_frames(
-            hand, float(radius), float(mpt), float(rpt), float(nt)
+            hand, float(radius), float(apm), float(rpm), float(nm)
         )
     elif symmetry_id.lower() == "input_defined":
         assert (
@@ -131,10 +131,16 @@ def get_symmetry_frames_from_atom_array(src_atom_array, input_frames):
     
     # Calculate translation component T = u_fix - R @ u_mov
     # This ensures that X_target approx R * X_asu + T
+    #
+    # IMPORTANT: Kabsch gives R_true where X_target = R_true @ X_source + T.
+    # However, the codebase convention (used by get_helical_frames, get_cyclic_frames,
+    # etc.) stores R^T so that the row-vector application `x @ R_stored + T` in
+    # apply_symmetry_to_xyz_atomwise correctly computes `R_true @ x + T`.
+    # We therefore transpose R before storing.
     computed_frames = []
     for R, (u_mov, _, u_fix) in zip(Rs, xforms.values()):
         T = u_fix - R @ u_mov
-        computed_frames.append((R, T))
+        computed_frames.append((R.T, T))
 
     # check that the computed frames match the input frames
     check_input_frames_match_symmetry_frames(
@@ -296,30 +302,30 @@ def get_dihedral_frames(order):
     return frames
 
 
-def get_helical_frames(handedness, radius, monomers_per_turn, rise_per_turn, num_turns):
+def get_helical_frames(handedness, radius, angle_per_monomer, rise_per_monomer, num_monomers):
     """
     Get helical frames.
     Arguments:
         handedness: 'R' or 'L'
         radius: radius of the helix
-        monomers_per_turn: number of monomers in 360 degrees
-        rise_per_turn: axial translation per full turn
-        num_turns: total number of turns
+        angle_per_monomer: rotation angle per monomer in degrees
+        rise_per_monomer: axial translation per monomer
+        num_monomers: total number of monomers
     Returns:
         frames: list of (rotation_matrix, translation_vector) tuples
     """
     print(
-        f"Generating helical frames with handedness={handedness}, radius={radius}, monomers_per_turn={monomers_per_turn}, rise_per_turn={rise_per_turn}, num_turns={num_turns}"
+        f"Generating helical frames with handedness={handedness}, radius={radius}, angle_per_monomer={angle_per_monomer}, rise_per_monomer={rise_per_monomer}, num_monomers={num_monomers}"
     )
-    n_subunits = int(np.ceil(monomers_per_turn * num_turns))
+    n_subunits = int(num_monomers)
 
     frames = []
 
-    d_phi = (2 * np.pi) / monomers_per_turn
+    d_phi = np.deg2rad(angle_per_monomer)
     if handedness.upper() == "R":
+        print("Swapping handedness: Right-handed helix will have negative rotation angle.")
         d_phi = -d_phi
-
-    d_z = rise_per_turn / monomers_per_turn
+    d_z = rise_per_monomer
 
     # Radius is encoded in ASU coordinates. Frames apply only rotation about Z
     # and axial translation, with transform 0 as identity. The radius parameter

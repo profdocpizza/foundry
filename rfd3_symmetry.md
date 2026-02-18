@@ -141,71 +141,168 @@ The RFdiffusion3 system is highly flexible. It decouples the geometric definitio
 
 ## 7. Implemented Helical Symmetry
 
-Helical (screw) symmetry has been fully implemented in `models/rfd3/src/rfd3/inference/symmetry/frames.py` and validated for fiber generation.
+Helical (screw) symmetry has been fully implemented and validated for fiber generation.
 
-### Logic
-A new function `get_helical_frames(handedness, radius, monomers_per_turn, rise_per_turn, num_turns)` generates rotation matrices ($R$) and translation vectors ($T$) for a helical assembly.
+### Symmetry ID Format
 
-**Key features:**
-*   **Handedness:** Supports 'R' (Right) and 'L' (Left). Right-handed is defined as clockwise rotation (negative `d_phi`).
-*   **Radius:** Encoded in the ASU coordinates (frames apply rotation and axial translation only).
-*   **Geometry:**
-    Subunit $i$ is positioned at:
-    *   Angle: $\theta_i = i \times \frac{2\pi}{\text{MonomersPerTurn}}$
-    *   Height: $Z_i = i \times \frac{\text{RisePerTurn}}{\text{MonomersPerTurn}}$
-    *   Translation: $T_i = [0, 0, Z_i]$
-    *   Transform 0 is identity ($R = I$, $T = 0$).
+`H_{Handedness}_{Radius}_{AnglePerMonomer}_{RisePerMonomer}_{NumMonomers}`
 
-**Warning (Radius currently does effectively nothing in frames):**
-The H `radius` parameter is parsed but not used in frame translations. It only affects initialization if the ASU coordinates are explicitly offset before diffusion. If you do not seed the ASU with a radius, the frames alone will not create one.
+| Parameter | Description |
+|---|---|
+| **Handedness** | `R` (right-handed, clockwise) or `L` (left-handed, counter-clockwise) |
+| **Radius** | Distance of the ASU center-of-mass from the helical axis (Z) in Ångströms. Not used in frames — enforced via coordinate initialization and per-step radius clamping. |
+| **AnglePerMonomer** | Rotation per monomer in **degrees** (e.g., `60` = 6 monomers per full turn). |
+| **RisePerMonomer** | Axial (Z) translation per monomer in Ångströms. |
+| **NumMonomers** | Total number of monomers (subunits) in the assembly. Truncated to `int`. |
 
-### Implementation Details
-*   **File:** `models/rfd3/src/rfd3/inference/symmetry/frames.py`
-    *   Added `get_helical_frames`.
-    *   Updated `get_symmetry_frames_from_symmetry_id` to parse the new `H_` prefix.
+### ASU Placement (Coordinate Space)
 
-### Differences vs C/D That Can Explain Current H Issues
-These differences are structural (code-level) and can lead to the behavior you described:
+The **Asymmetric Unit (ASU)** is the first subunit (transform 0, chain A). It is the master copy; all other subunits are generated from it.
 
-1. **Transform 0 is identity for H.**
-    - For C/D, transform 0 is identity. For H, transform 0 is also identity (no translation); axial translation is applied in frames for other subunits only.
-    - This avoids repeated translation of the ASU during symmetrization.
+**Coordinate system:** The helical axis is always **Z**. The ASU is placed in the **XZ-plane**:
 
-2. **Per-step COM centering interacts with translation.**
-    - `apply_symmetry_to_xyz_atomwise` subtracts the mean of all non-fixed atoms before applying transforms (except in partial diffusion).
-    - For H, COM centering is now skipped when symmetry transforms include translation, to avoid re-centering and re-applying axial offsets on every step.
+1. During input parsing (`_set_origin` in `input_parsing.py`), for helical symmetry:
+   - COM centering is **skipped** — input coordinates are preserved as-is for conditioned runs.
+   - For non-fixed (diffused) atoms, coordinates are zeroed out: `coord = 0.0`.
+   - `apply_helical_asu_radius_offset` then sets the X-coordinate of all non-fixed ASU atoms to the radius value:
+     $$ \text{coord}_{ASU,\text{non-fixed}} = (\text{radius}, 0, 0) $$
+   - This places the ASU's center-of-mass at distance `radius` from the Z-axis, along the +X direction.
 
-3. **Symmetry is applied only to denoised coordinates, not noisy ones.**
-    - The model denoises `X_noisy_L` without symmetry, then the output is symmetrized.
-    - This can lead to rotational drift unless the model learns to counteract it.
+2. During diffusion (`apply_symmetry_to_xyz_atomwise` in `symmetry_utils.py`):
+   - At every symmetry step, the ASU's XY center-of-mass is **re-clamped** to the target radius. The code computes the current COM in XY, scales it so `||COM_xy|| == radius`, and shifts all ASU atoms by the delta. This prevents the noise schedule from overwhelming the radius seed.
+   - **No COM centering** is applied for helical symmetry (neither pre- nor post-symmetrization), unlike C/D where the full assembly is re-centered at the origin each step.
 
-4. **Symmetry ID truncation risk.**
-    - Symmetry IDs are stored in an atom-array annotation with dtype `U6`.
-    - Long helical IDs such as `H_R_20.0_4.5_20.0_3` will be truncated in annotations, which can break code paths that rely on `atom_array.symmetry_id[0]` for reconstruction or validation.
+### Frame Generation and Handedness
 
-5. **Debug prints in `get_helical_frames`.**
-    - The function prints per-call debug output. This is harmless but adds noise and makes it harder to validate behavior in batch runs.
+`get_helical_frames` in `frames.py` generates one $(R_i, T_i)$ pair per monomer.
 
-### Usage
-To run helical symmetry, use the following ID format in your YAML/JSON input:
+**Rotation** is about the Z-axis. The angular step is:
 
-`H_{Handedness}_{Radius}_{MonomersPerTurn}_{RisePerTurn}_{NumTurns}`
+$$ d\phi = \text{AnglePerMonomer} \text{ (in radians)} $$
 
-**Arguments:**
-1.  **Handedness**: `R` or `L`. (e.g., `R`)
-2.  **Radius**: Radius of the helix in Angstroms (e.g., `20.0`). *Currently used only for ASU seeding; frames ignore it.*
-3.  **MonomersPerTurn**: Number of subunits per 360-degree turn (e.g., `4.5`).
-4.  **RisePerTurn**: Vertical rise per full 360-degree turn in Angstroms (e.g., `20.0`).
-5.  **NumTurns**: Total number of turns to generate (determines the fiber length).
+- **Left-handed (`L`):** `d_phi` stays **positive** → counter-clockwise rotation when viewed from +Z.
+- **Right-handed (`R`):** `d_phi` is **negated** → clockwise rotation when viewed from +Z.
 
-**Example YAML:**
+**Translation** is purely axial (+Z):
+
+$$ T_i = [0, 0, i \times \text{RisePerMonomer}] $$
+
+**Frame 0 is always identity** ($R_0 = I_{3 \times 3}$, $T_0 = [0,0,0]$). This means the ASU itself is never transformed — only copies $i \geq 1$ receive non-trivial transforms.
+
+**Example for `H_L_20.0_60_10.0_3` (3 monomers):**
+
+| Monomer $i$ | Rotation $\theta_i$ | Translation $T_i$ |
+|---|---|---|
+| 0 (ASU) | $0°$ | $[0, 0, 0]$ |
+| 1 | $+60°$ (CCW) | $[0, 0, 10]$ |
+| 2 | $+120°$ (CCW) | $[0, 0, 20]$ |
+
+**Example for `H_R_20.0_60_10.0_3` (same but right-handed):**
+
+| Monomer $i$ | Rotation $\theta_i$ | Translation $T_i$ |
+|---|---|---|
+| 0 (ASU) | $0°$ | $[0, 0, 0]$ |
+| 1 | $-60°$ (CW) | $[0, 0, 10]$ |
+| 2 | $-120°$ (CW) | $[0, 0, 20]$ |
+
+### Which Chain Is Copied
+
+- The ASU is **chain A** (transform_id = 0). It carries the annotation `is_sym_asu = True`.
+- During initialization (`make_symmetric_atom_array`), the ASU is duplicated once per frame. Each copy gets a new chain ID (B, C, D, …) via `reannotate_chain_ids`, and its coordinates are transformed by `apply_symmetry_to_atomarray_coord(copy, frame)` using `coord = coord @ R + T`.
+- During diffusion, `apply_symmetry_to_xyz_atomwise` reads only the ASU coordinates (`X_L[:, is_sym_asu, :]`) and overwrites all other subunits:
+
+$$ X_{\text{subunit}_i} = X_{ASU} \cdot R_i + T_i $$
+
+(Note: the codebase stores $R^T$ so that the row-vector multiplication `coord @ R_stored` yields the correct result.)
+
+- **Unindexed motifs and ligands** (e.g., HEM) are excluded from symmetry expansion — they are stripped out before duplication, given `transform_id = -1` and `entity_id = -1`, and appended back at the end with lowercase chain IDs.
+
+### Unconditional Helical Design
+
+**Config:**
 ```yaml
-uncond_Helical_example:
-  length: 100
+L_unconditional_NEW_nomenclature:
+  length: 80
+  is_non_loopy: true
   symmetry:
-    id: "H_R_20.0_4.5_20.0_3"
+    id: "H_L_20.0_60_10.0_3"
 ```
-This generates a Right-handed helix with a 20Å radius, 4.5 monomers per turn, 20Å rise per turn, spanning 3 turns.
+
+**What happens step-by-step:**
+
+1. **No input PDB.** An 80-residue ASU is created from scratch with no motif atoms.
+2. **Origin setting:** All atom coordinates are zeroed, then `apply_helical_asu_radius_offset` sets them to $(20, 0, 0)$.
+3. **Symmetry expansion:** `make_symmetric_atom_array` takes the single-chain ASU and produces 3 chains:
+   - Chain A (ASU, identity transform)
+   - Chain B (rotated +60°, translated +10Å along Z)
+   - Chain C (rotated +120°, translated +20Å along Z)
+   - Since there are no motifs (`is_symmetric_motif` has nothing to align), frames come directly from the symmetry ID via `get_helical_frames`.
+4. **Diffusion loop:** At each denoising step (while $c_t > \gamma_{min\_sym}$):
+   - The network denoises `X_noisy_L` (which is NOT symmetrized).
+   - The denoised output `X_denoised_L` is symmetrized: the ASU's XY COM is scaled to radius 20Å, then chains B and C are overwritten by applying their respective frames to the ASU.
+   - No COM centering is performed (helical mode skips it).
+5. **Result:** A 3-monomer left-handed helical fiber with 80 residues per monomer, 60° rotation per step, 10Å axial rise per step, and ~20Å radial distance from the Z-axis.
+
+### Conditioned Helical Design (Heme + Histidine)
+
+**Config:**
+```yaml
+cable_L_narrow_burried:
+  length: 80
+  is_non_loopy: true
+  input: "/home/tadas/code/rfd3_fibers/inputs/heme_aligned_his_atom_both_sides_H_L_20_20_25_4.pdb"
+  ligand: HEM
+  unindex: "A87,A88"
+  select_fixed_atoms:
+    A87: "NE2"
+    A88: "NE2"
+  symmetry:
+    id: "H_L_20_20_25_4"
+```
+
+**What happens step-by-step:**
+
+1. **Input PDB loaded.** The PDB contains a pre-arranged helical assembly: multiple protein chains with heme (HEM) ligands and histidine coordination residues (A87, A88) already positioned in the correct helical geometry.
+2. **COM centering skipped.** `center_symmetric_src_atom_array` detects helical symmetry and preserves all input coordinates exactly.
+3. **Motif setup:**
+   - `ligand: HEM` → heme atoms are marked as small molecules. They will be excluded from symmetry duplication, assigned `transform_id = -1`, and re-attached at the end.
+   - `unindex: "A87,A88"` → residues 87 and 88 become **unindexed motifs** (their sequence is fixed but they are not contiguously connected to the diffused backbone).
+   - `select_fixed_atoms: A87: "NE2", A88: "NE2"` → the NE2 atoms of these histidines are **spatially fixed** throughout diffusion. Their coordinates never change.
+4. **Frame derivation:** Because `is_symmetric_motif` defaults to `True`, the system uses **Kabsch alignment** (`get_symmetry_frames_from_atom_array`) on the input PDB chains rather than the ID string. This derives the actual $(R, T)$ pairs by aligning each chain to the first chain, ensuring the frames match the real geometry of the input structure.
+5. **Symmetry expansion:** The ASU (first chain only, after stripping HEM and unindexed motifs) is duplicated 4 times using the Kabsch-derived frames. HEM and unindexed motifs are appended back with fixed annotations.
+6. **Origin setting:**
+   - COM centering is skipped (helical mode).
+   - Non-fixed diffused atoms are set to $(0, 0, 0)$, then offset to $(20, 0, 0)$ via `apply_helical_asu_radius_offset`.
+   - Fixed atoms (NE2 of His87, NE2 of His88) **retain their input PDB coordinates**.
+7. **Diffusion loop:** Same as unconditional, but:
+   - Fixed atoms (NE2) are never noised and never overwritten — they act as spatial anchors.
+   - The model generates the 80-residue backbone around these fixed His-NE2 atoms, respecting the helical geometry.
+   - At each symmetry step, the ASU (including its fixed atoms) is copied to all 4 subunits via their frames.
+   - Heme ligands remain at their input positions, unsymmetrized.
+8. **Result:** A 4-monomer left-handed helical fiber with 80 residues per monomer, 20° rotation per step, 25Å rise per step, each monomer wrapping around two histidine-coordinated heme groups.
+
+### Key Differences vs C/D Symmetry
+
+| Aspect | C/D | H (Helical) |
+|---|---|---|
+| Translation component | Always $[0,0,0]$ | $[0, 0, i \times \text{rise}]$ along Z |
+| COM centering per step | Yes (all axes) | **Skipped entirely** |
+| Radius enforcement | N/A (distance from origin is model-determined) | ASU XY-COM is clamped to target radius every step |
+| COM centering of input | Yes (centered to origin) | **Skipped** (preserves input coordinates) |
+| Frame source (conditioned) | Kabsch from input PDB | Kabsch from input PDB (same) |
+| Frame source (unconditional) | From symmetry ID | From symmetry ID (same) |
+
+### Implementation Files
+- **`models/rfd3/src/rfd3/inference/symmetry/frames.py`** — `get_helical_frames`: generates $(R, T)$ per monomer. `get_symmetry_frames_from_symmetry_id`: parses `H_` prefix.
+- **`models/rfd3/src/rfd3/inference/symmetry/symmetry_utils.py`** — `apply_helical_asu_radius_offset`: seeds ASU at radius. `apply_symmetry_to_xyz_atomwise`: per-step radius clamping + symmetry application. `center_symmetric_src_atom_array`: skips COM centering for H.
+- **`models/rfd3/src/rfd3/inference/input_parsing.py`** — `_set_origin`: helical branch that skips COM centering.
+- **`models/rfd3/src/rfd3/inference/symmetry/atom_array.py`** — `get_symmetry_unit`: duplicates chain A and applies frame transforms.
+
+### Known Caveats
+
+1. **Debug prints.** `get_helical_frames` prints per-call debug output. Harmless but noisy in batch runs.
+2. **Symmetry ID stored as `<U100`** in atom-array annotations (changed from the old `U6` to avoid truncation of long helical IDs).
+3. **Symmetry applied only to denoised coords.** The noisy structure `X_noisy_L` is never symmetrized by the sampler, which can cause rotational drift.
 
 ## 8. Trajectory Output Notes (Important)
 

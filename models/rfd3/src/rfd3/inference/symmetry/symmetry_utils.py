@@ -438,24 +438,47 @@ def apply_symmetry_to_xyz_atomwise(
                 :, ~fixed_motif_mask, :
             ].mean(dim=1, keepdim=True)
 
-    # Enforce helical radius on ASU before applying symmetry transforms.
-    # For unconditional helical designs the initial radius seed is overwhelmed
-    # by the noise schedule (c0 >> radius), so we must re-inject the target
-    # radius at every symmetry step.
+    # Enforce helical ASU position before applying symmetry transforms.
+    # Clamp the ASU COM to a cylindrical box centered at (R, 0, 0):
+    #   - Radius:  R ± 15 Å
+    #   - Angle:   ± 15° around 0 (around Z axis)
+    #   - Z:       ± 15 Å around 0
+    # This prevents orbiting and Z-drift while giving the assembly room to relax.
     if is_helical and not partial_diffusion:
-        # Only adjust non-fixed ASU atoms
         asu_non_fixed = is_sym_asu & ~fixed_motif_mask
         if asu_non_fixed.any():
-            asu_xy = X_L[:, asu_non_fixed, :2]  # [B, Lasu, 2] (X, Y)
-            asu_com_xy = asu_xy.mean(dim=1, keepdim=True)  # [B, 1, 2]
-            current_radius = torch.norm(asu_com_xy, dim=-1, keepdim=True).clamp(min=1e-6)  # [B, 1, 1]
-            # Scale XY of ASU so that the COM sits at the target radius
-            scale = helical_radius / current_radius  # [B, 1, 1]
-            # Shift ASU atoms: translate COM to target radius, keep internal structure
-            target_com_xy = asu_com_xy * scale  # [B, 1, 2]
-            delta_xy = target_com_xy - asu_com_xy  # [B, 1, 2]
-            X_L[:, asu_non_fixed, 0] += delta_xy[:, :, 0]
-            X_L[:, asu_non_fixed, 1] += delta_xy[:, :, 1]
+            asu_xyz = X_L[:, asu_non_fixed, :]  # [B, Lasu, 3]
+            asu_com = asu_xyz.mean(dim=1, keepdim=True)  # [B, 1, 3]
+
+            # Convert COM to cylindrical coordinates (r, theta, z)
+            com_x = asu_com[:, :, 0]  # [B, 1]
+            com_y = asu_com[:, :, 1]  # [B, 1]
+            com_z = asu_com[:, :, 2]  # [B, 1]
+            com_r = torch.sqrt(com_x ** 2 + com_y ** 2).clamp(min=1e-6)  # [B, 1]
+            com_theta = torch.atan2(com_y, com_x)  # [B, 1], radians
+
+            # Clamp in cylindrical space
+            _R_HALF = 7.5
+            _ANGLE_HALF_DEG = 7.5
+            _Z_HALF = 7.5
+            _angle_half_rad = _ANGLE_HALF_DEG * torch.pi / 180.0
+
+            clamped_r = torch.clamp(com_r, min=max(helical_radius - _R_HALF, 1.0),
+                                    max=helical_radius + _R_HALF)
+            clamped_theta = torch.clamp(com_theta, min=-_angle_half_rad,
+                                        max=_angle_half_rad)
+            clamped_z = torch.clamp(com_z, min=-_Z_HALF, max=_Z_HALF)
+
+            # Convert clamped cylindrical back to Cartesian
+            target_x = clamped_r * torch.cos(clamped_theta)
+            target_y = clamped_r * torch.sin(clamped_theta)
+            target_z = clamped_z
+
+            # Apply delta to all ASU atoms (rigid translation)
+            # delta shapes: [B, 1] — broadcasts over Lasu atoms
+            X_L[:, asu_non_fixed, 0] += (target_x - com_x)  # [B, 1] broadcasts to [B, Lasu]
+            X_L[:, asu_non_fixed, 1] += (target_y - com_y)
+            X_L[:, asu_non_fixed, 2] += (target_z - com_z)
 
     sym_X_L = X_L.clone()
 

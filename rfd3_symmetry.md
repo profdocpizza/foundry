@@ -308,3 +308,17 @@ cable_L_narrow_burried:
 
 - The inference engine currently swaps denoised and noisy trajectories when assembling stacks for output. Files labeled `_noisy_model_*.cif` can contain denoised (symmetrized) coordinates, and vice versa.
 - If you are validating symmetry using noisy trajectories, confirm the swap in [models/rfd3/src/rfd3/engine.py](models/rfd3/src/rfd3/engine.py) before interpreting results.
+
+## 9. Recent Changes: Helical ASU COM Clamping Logic
+
+**2026-02:**
+
+- The logic for constraining the Asymmetric Unit (ASU) center-of-mass (COM) during helical symmetry diffusion was updated.
+- Instead of pinning the ASU COM to a fixed point (e.g., $(R, 0, 0)$) or a plane, the COM is now clamped to a **cylindrical box** centered at $(R, 0, 0)$:
+    - **Radius:** $[R-7.5, R+7.5]$ Å
+    - **Angle:** $[-7.5^\circ, +7.5^\circ]$ around the Z axis (in the XY plane, relative to +X)
+    - **Z:** $[-7.5, +7.5]$ Å
+- This allows the ASU to move and rotate within a small region, giving the system flexibility to optimize interfaces and avoid over-constraining the assembly, while still preventing large-scale drift or collapse to the origin.
+- The clamping is implemented in `apply_symmetry_to_xyz_atomwise` in `symmetry_utils.py` and is applied at every symmetry step for helical symmetry.
+- The angle constraint is around the Z axis, so the ASU can orbit slightly in the XY plane.
+- These changes improve the quality and diversity of generated helical assemblies by balancing geometric enforcement and model freedom.

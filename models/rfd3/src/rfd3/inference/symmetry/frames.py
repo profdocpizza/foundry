@@ -332,8 +332,14 @@ def get_helical_frames(handedness, radius, angle_per_monomer, rise_per_monomer, 
     # is kept for ID compatibility but is not used here.
 
     for i in range(n_subunits):
-        angle = i * d_phi
-        z = i * d_z
+        if i == 0:
+            angle = 0.0
+            z = 0.0
+        else:
+            n = (i + 1) // 2
+            sign = 1 if i % 2 == 1 else -1
+            angle = sign * n * d_phi
+            z = sign * n * d_z
 
         c = np.cos(angle)
         s = np.sin(angle)
@@ -351,7 +357,7 @@ def get_helical_frames(handedness, radius, angle_per_monomer, rise_per_monomer, 
         # Debugging: Print coordinate and axial translation only
         if i < 5:  # Only print first few to avoid spam
             print(
-                f"Subunit {i}: T=[{T[0]:.2f}, {T[1]:.2f}, {T[2]:.2f}], Requested radius={radius:.2f}"
+                f"Subunit {i}: T=[{T[0]:.2f}, {T[1]:.2f}, {T[2]:.2f}], angle={np.rad2deg(angle):.2f}°, Requested radius={radius:.2f}"
             )
 
         frames.append((R, T))
